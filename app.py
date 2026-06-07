@@ -155,37 +155,58 @@ def detect_patterns(df):
         return patterns
 
     try:
-        milk_tea_mask = (df['类别'] == '餐饮') & (df['金额'] >= 8) & (df['金额'] <= 45)
-        note_mask = df['备注'].astype(str).str.contains(r'奶茶|咖啡|星巴克|瑞幸|喜茶|奈雪', case=False, na=False)
-        milk_tea = df[milk_tea_mask | note_mask]
+        note_mask = df['备注'].astype(str).str.contains(
+            r'奶茶|咖啡|星巴克|瑞幸|喜茶|奈雪|蜜雪|一点点|coco|茶百道|古茗|霸王茶姬|沪上阿姨|茶颜|冰美式|拿铁|卡布奇诺|摩卡|星冰乐|脏脏茶|芋泥啵啵|杨枝甘露|水果茶',
+            case=False, na=False
+        )
+        drinks_keyword = df[note_mask]
+
+        price_range = (df['金额'] >= 10) & (df['金额'] <= 35)
+        tea_time = (df['小时'] >= 9) & (df['小时'] <= 11) | (df['小时'] >= 13) & (df['小时'] <= 17)
+        category_match = df['类别'] == '餐饮'
+        probable_drinks = df[price_range & tea_time & category_match & ~note_mask]
+
+        milk_tea = pd.concat([drinks_keyword, probable_drinks]).drop_duplicates()
+
         if len(milk_tea) > 0:
             monthly = milk_tea.groupby('月份').size()
             avg_monthly = float(monthly.mean()) if len(monthly) > 0 else 0
+            keyword_cnt = len(drinks_keyword)
+            inferred_cnt = len(probable_drinks)
             patterns['奶茶依赖'] = {
-                'label': '奶茶依赖 🧋',
+                'label': '奶茶/咖啡依赖 🧋',
                 'detected': avg_monthly >= 6,
-                'detail': f"月均 {avg_monthly:.1f} 杯，累计消费 ¥{milk_tea['金额'].sum():.2f}",
+                'detail': (f"月均 {avg_monthly:.1f} 杯，累计消费 ¥{milk_tea['金额'].sum():.2f}"
+                           f"（关键词识别{keyword_cnt}次，时段推断{inferred_cnt}次）"),
                 'severity': '高' if avg_monthly >= 12 else ('中' if avg_monthly >= 8 else '低')
             }
         else:
-            patterns['奶茶依赖'] = {'label': '奶茶依赖 🧋', 'detected': False, 'detail': '暂无相关消费', 'severity': '无'}
+            patterns['奶茶依赖'] = {'label': '奶茶/咖啡依赖 🧋', 'detected': False, 'detail': '暂无饮品高频消费', 'severity': '无'}
     except Exception:
-        patterns['奶茶依赖'] = {'label': '奶茶依赖 🧋', 'detected': False, 'detail': '分析异常', 'severity': '无'}
+        patterns['奶茶依赖'] = {'label': '奶茶/咖啡依赖 🧋', 'detected': False, 'detail': '分析异常', 'severity': '无'}
 
     try:
-        late_night = df[(df['小时'] >= 22) | (df['小时'] <= 2)]
+        late_hours = (df['小时'] >= 22) | (df['小时'] <= 2)
+        shopping_cats = df['类别'].isin(['购物', '娱乐'])
+        emotional = df['情绪标签'].isin(['冲动', '后悔', '开心'])
+        late_night = df[late_hours & (shopping_cats | emotional)]
         if len(late_night) > 0:
             pct = len(late_night) / len(df) * 100
+            shop_count = len(late_night[late_night['类别'] == '购物'])
+            ent_count = len(late_night[late_night['类别'] == '娱乐'])
+            food_count = len(late_night[late_night['类别'] == '餐饮'])
+            detail = (f"深夜非刚需消费 {len(late_night)} 次，占比 {pct:.1f}%，金额 ¥{late_night['金额'].sum():.2f}"
+                      f"（购物{shop_count}次/娱乐{ent_count}次/夜宵{food_count}次）")
             patterns['深夜购物'] = {
-                'label': '深夜购物 🌙',
+                'label': '深夜非刚需消费 🌙',
                 'detected': pct >= 10,
-                'detail': f"深夜时段消费 {len(late_night)} 次，占比 {pct:.1f}%，金额 ¥{late_night['金额'].sum():.2f}",
+                'detail': detail,
                 'severity': '高' if pct >= 25 else ('中' if pct >= 15 else '低')
             }
         else:
-            patterns['深夜购物'] = {'label': '深夜购物 🌙', 'detected': False, 'detail': '暂无深夜消费', 'severity': '无'}
+            patterns['深夜购物'] = {'label': '深夜非刚需消费 🌙', 'detected': False, 'detail': '无深夜冲动消费记录', 'severity': '无'}
     except Exception:
-        patterns['深夜购物'] = {'label': '深夜购物 🌙', 'detected': False, 'detail': '分析异常', 'severity': '无'}
+        patterns['深夜购物'] = {'label': '深夜非刚需消费 🌙', 'detected': False, 'detail': '分析异常', 'severity': '无'}
 
     try:
         bulk_keywords = r'囤|批发|一箱|一打|套装|组合|大包装|多件|打折|促销|满减'
@@ -872,8 +893,8 @@ def update_dashboard(months, categories, payments, scenes, goals):
         avg = float(df['金额'].mean())
         max_v = float(df['金额'].max())
 
-        budget_info = generate_budget_suggestion(current_df)
-        patterns = detect_patterns(current_df)
+        budget_info = generate_budget_suggestion(df)
+        patterns = detect_patterns(df)
 
         pattern_items = []
         for key, info in patterns.items():
